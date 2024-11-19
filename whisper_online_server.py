@@ -276,6 +276,13 @@ class ServerProcessor:
 #        o = self.online_asr_proc.finish()  # this should be working
 #        self.send_result(o)
 
+def check_shutdown_command():
+    """Check if a shutdown command file exists"""
+    if os.path.exists('shutdown.txt'):
+        os.remove('shutdown.txt')  # Clean up the file
+        return True
+    return False
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -321,19 +328,46 @@ def main():
         logger.warning(msg)
 
     # Server loop
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((args.host, args.port))
-        s.listen(1)
-        logger.info('Listening on'+str((args.host, args.port)))
-        while True:
-            conn, addr = s.accept()
-            logger.info('Connected to client on {}'.format(addr))
-            connection = Connection(conn)
-            proc = ServerProcessor(connection, online, args.min_chunk_size)
-            proc.process()
-            conn.close()
-            logger.info('Connection to client closed')
-    logger.info('Connection closed, terminating.')
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((args.host, args.port))
+            s.listen(1)
+            logger.info('Listening on'+str((args.host, args.port)))
+            logger.info('Press Ctrl+C or create "shutdown.txt" file to stop the server')
+            
+            while True:
+                if check_shutdown_command():
+                    logger.info('Shutdown command received, stopping server...')
+                    break
+                    
+                try:
+                    # Set a timeout so we can check for shutdown command periodically
+                    s.settimeout(1.0)
+                    conn, addr = s.accept()
+                    s.settimeout(None)  # Reset timeout for normal operation
+                    
+                    logger.info('Connected to client on {}'.format(addr))
+                    connection = Connection(conn)
+                    proc = ServerProcessor(connection, online, args.min_chunk_size)
+                    proc.process()
+                    conn.close()
+                    logger.info('Connection to client closed')
+                except socket.timeout:
+                    continue  # Check for shutdown command again
+                except KeyboardInterrupt:
+                    logger.info('Received interrupt, shutting down...')
+                    break
+                except Exception as e:
+                    logger.error(f'Error processing connection: {str(e)}')
+                    continue
+                
+    except KeyboardInterrupt:
+        logger.info('Received interrupt, shutting down...')
+    except Exception as e:
+        logger.error(f'Server error: {str(e)}')
+    finally:
+        logger.info('Server shutdown complete')
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
