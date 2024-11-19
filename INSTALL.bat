@@ -8,4 +8,4 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
 pip install librosa soundfile faster-whisper pyaudio
 
 :: Create shortcut with proper command prompt settings
-powershell "$WS = New-Object -ComObject WScript.Shell; $SC = $WS.CreateShortcut('%userprofile%\Desktop\LIVE Captions Server.lnk'); $SC.TargetPath = 'cmd.exe'; $SC.Arguments = '/k """%~dp0server-connect-captions.bat"""'; $SC.WorkingDirectory = '%~dp0'; $SC.Save()"
+$WS = New-Object -ComObject WScript.Shell; $SC = $WS.CreateShortcut("$env:USERPROFILE\Desktop\LIVE Captions Server.lnk"); $SC.TargetPath = "$PWD\server-connect-captions.bat"; $SC.WorkingDirectory = "$PWD"; $SC.Save()
