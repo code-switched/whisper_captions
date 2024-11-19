@@ -121,6 +121,17 @@ def get_user_preferences():
         except ValueError:
             print("Please enter a valid number.")
 
+    # Get the machine's IP address
+    try:
+        # This creates a temporary socket to get the local IP address
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Doesn't actually connect, just helps get local IP
+        s.connect(('8.8.8.8', 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except:
+        local_ip = "IP Unknown"
+
     # Create sys.argv with the selected options
     sys.argv = [sys.argv[0]]
     sys.argv.extend(["--model", selected_model])
@@ -139,6 +150,7 @@ def get_user_preferences():
     # Create a summary of selected options
     summary = f"""
 === Configuration Summary ===
+Server IP: {local_ip}
 Model: {selected_model}
 Backend: {selected_backend}
 Host: {host}
