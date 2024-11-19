@@ -230,15 +230,25 @@ class ServerProcessor:
         return np.concatenate(out)
 
     def format_output_transcript(self,o):
+        # output format in stdout is like:
+        # 0 1720 Takhle to je
+        # - the first two words are:
+        #    - beg and end timestamp of the text segment, as estimated by Whisper model. The timestamps are not accurate, but they're useful anyway
+        # - the next words: segment transcript
+
+        # This function differs from whisper_online.output_transcript in the following:
+        # succeeding [beg,end] intervals are not overlapping because ELITR protocol (implemented in online-text-flow events) requires it.
+        # Therefore, beg, is max of previous end and current beg outputed by Whisper.
+        # Usually it differs negligibly, by appx 20 ms.
+
         if o[0] is not None:
             beg, end = o[0]*1000,o[1]*1000
             if self.last_end is not None:
                 beg = max(beg, self.last_end)
 
             self.last_end = end
-            message = "%1.0f %1.0f %s\n" % (beg,end,o[2])
-            print(message.strip(),flush=True,file=sys.stderr)
-            return message
+            print("%1.0f %1.0f %s" % (beg,end,o[2]),flush=True,file=sys.stderr)
+            return "%1.0f %1.0f %s" % (beg,end,o[2])
         else:
             logger.debug("No text in this segment")
             return None
@@ -246,11 +256,7 @@ class ServerProcessor:
     def send_result(self, o):
         msg = self.format_output_transcript(o)
         if msg is not None:
-            try:
-                self.connection.send(msg)
-                logger.debug(f"Sent message to client: {msg.strip()}")
-            except Exception as e:
-                logger.error(f"Error sending message to client: {str(e)}")
+            self.connection.send(msg)
 
     def process(self):
         # handle one client connection
