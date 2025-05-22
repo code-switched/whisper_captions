@@ -11,121 +11,235 @@ import socket
 import line_packet
 import io
 import soundfile
+from config_utils import load_config, update_config_value, get_config_value, DEFAULT_CONFIG
 
 logger = logging.getLogger(__name__)
 
 # setting whisper object by args 
 SAMPLING_RATE = 16000
 
+# Helper to manage saving logic
+def _save_if_needed(key_path, final_value, value_from_file, sentinel, setting_name_for_print):
+    if value_from_file is sentinel: # Not in config file originally
+        update_config_value(key_path, final_value)
+        # Avoid printing for None if it's a non-critical field or if it's intended to be None
+        if final_value is not None or setting_name_for_print in ["model", "backend", "log_level"]: # model/backend/log_level must be explicitly set
+             print(f"'{setting_name_for_print}' set to '{final_value}' and saved to config.")
+        elif final_value is None and value_from_file is not None : # explicitely setting to None
+             print(f"'{setting_name_for_print}' set to '{final_value}' and saved to config.")
+
+    elif final_value != value_from_file: # Was in config, but changed
+        update_config_value(key_path, final_value)
+        print(f"'{setting_name_for_print}' updated to '{final_value}' and saved to config.")
+
 def get_user_preferences():
-    # Default values
-    defaults = {
-        "model": "medium",
-        "backend": "faster-whisper",
-        "host": "0.0.0.0",
-        "port": 43007,
-        "warmup_file": "./jfk.wav",
-        "language": "en",
-        "vac": True,
-        "vad": True,
-        "min_chunk_size": 0.25,
-        "log_level": "INFO"
-    }
+    print("Loading server configuration from config.yaml...")
+    load_config() # Ensures config file exists or creates default. Messages handled by config_utils.
 
-    # Available models and backends
-    models = ["tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3"]
-    backends = ["faster-whisper", "whisper_timestamped", "openai-api"]
-    log_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    models_list = ["tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3"]
+    backends_list = ["faster-whisper", "whisper_timestamped", "openai-api"]
+    log_levels_list = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    _sentinel = object()
 
-    print("\n=== Whisper Streaming Configuration ===")
+    print("\n=== Whisper Streaming Server Configuration ===")
+
+    # --- Generic helper for list selections (model, backend, log_level) ---
+    def get_selection_from_list(setting_name, item_list, current_value_for_logic, value_from_config_file):
+        print(f"\nAvailable {setting_name}s:")
+        for i, option in enumerate(item_list, 1):
+            print(f"{i}. {option}")
+        
+        final_selected_value = current_value_for_logic
+        while True:
+            prompt_message = f"\nSelect a {setting_name} (1-{len(item_list)})"
+            if final_selected_value is not None:
+                prompt_message += f" [default: {final_selected_value}]: "
+            else: # Critical setting like model/backend might be None from DEFAULT_CONFIG
+                prompt_message += " (required): "
+            
+            choice = input(prompt_message).strip()
+
+            if not choice: # User hit Enter
+                if final_selected_value is None and setting_name in ["model", "backend"]:
+                    print(f"A selection for '{setting_name}' is required.")
+                    continue # Re-prompt
+                # final_selected_value already holds the correct default (from file or DEFAULT_CONFIG)
+                break 
+            try:
+                choice_idx = int(choice)
+                if 1 <= choice_idx <= len(item_list):
+                    final_selected_value = item_list[choice_idx-1]
+                    print(f"{setting_name.capitalize()} '{final_selected_value}' selected.")
+                    break
+                print(f"Invalid choice. Please select a number between 1 and {len(item_list)}.")
+            except ValueError:
+                print("Please enter a valid number.")
+        return final_selected_value
+
+    # --- Model Selection ---
+    key_path_model = "server.model"
+    default_dc_model = DEFAULT_CONFIG['server']['model']
+    val_from_config_model = get_config_value(key_path_model, _sentinel)
     
-    # Model selection
-    print("\nAvailable models:")
-    for i, model in enumerate(models, 1):
-        print(f"{i}. {model}")
-    while True:
-        choice = input(f"\nSelect a model (1-{len(models)}) [default: medium]: ").strip()
-        if not choice:
-            selected_model = defaults["model"]
-            break
-        try:
-            choice = int(choice)
-            if 1 <= choice <= len(models):
-                selected_model = models[choice-1]
-                break
-            print(f"Invalid choice. Please select a number between 1 and {len(models)}.")
-        except ValueError:
-            print("Please enter a valid number.")
+    current_model_val = default_dc_model
+    if val_from_config_model is not _sentinel:
+        print(f"Using 'model' from config: {val_from_config_model}")
+        current_model_val = val_from_config_model
+    # If not in config, current_model_val remains default_dc_model
+    if current_model_val is None: # Check effective value after considering config and DEFAULT_CONFIG
+         print(f"The configured 'model' is None or not set. A selection is required.")
 
-    # Backend selection
-    print("\nAvailable backends:")
-    for i, backend in enumerate(backends, 1):
-        print(f"{i}. {backend}")
-    while True:
-        choice = input(f"\nSelect a backend (1-{len(backends)}) [default: faster-whisper]: ").strip()
-        if not choice:
-            selected_backend = defaults["backend"]
-            break
-        try:
-            choice = int(choice)
-            if 1 <= choice <= len(backends):
-                selected_backend = backends[choice-1]
-                break
-            print(f"Invalid choice. Please select a number between 1 and {len(backends)}.")
-        except ValueError:
-            print("Please enter a valid number.")
+    selected_model = get_selection_from_list("model", models_list, current_model_val, val_from_config_model)
+    _save_if_needed(key_path_model, selected_model, val_from_config_model, _sentinel, "model")
+    if selected_model is None: # Should not happen if loop in get_selection_from_list is correct
+        print("Error: Model not selected. Exiting.")
+        sys.exit(1)
 
-    # Host
-    host = input(f"\nEnter host address [default: {defaults['host']}]: ").strip()
-    host = host if host else defaults["host"]
 
-    # Port
-    port_input = input(f"\nEnter port number [default: {defaults['port']}]: ").strip()
-    port = int(port_input) if port_input else defaults["port"]
+    # --- Backend Selection ---
+    key_path_backend = "server.backend"
+    default_dc_backend = DEFAULT_CONFIG['server']['backend']
+    val_from_config_backend = get_config_value(key_path_backend, _sentinel)
 
-    # Warmup file
-    warmup_file = input(f"\nEnter warmup file path [default: {defaults['warmup_file']}]: ").strip()
-    warmup_file = warmup_file if warmup_file else defaults["warmup_file"]
+    current_backend_val = default_dc_backend
+    if val_from_config_backend is not _sentinel:
+        print(f"Using 'backend' from config: {val_from_config_backend}")
+        current_backend_val = val_from_config_backend
+    # If not in config, current_backend_val remains default_dc_backend
+    if current_backend_val is None: # Check effective value
+        print(f"The configured 'backend' is None or not set. A selection is required.")
 
-    # Language
-    language = input(f"\nEnter language code (e.g., en, de, cs, or 'auto') [default: {defaults['language']}]: ").strip()
-    language = language if language else defaults["language"]
+    selected_backend = get_selection_from_list("backend", backends_list, current_backend_val, val_from_config_backend)
+    _save_if_needed(key_path_backend, selected_backend, val_from_config_backend, _sentinel, "backend")
+    if selected_backend is None:
+        print("Error: Backend not selected. Exiting.")
+        sys.exit(1)
 
-    # VAC
-    vac = input("\nEnable Voice Activity Controller (VAC)? (Y/n) [default: Y]: ").strip().lower()
-    vac = vac != 'n'
+    # --- Helper for direct string/int/float input ---
+    def get_direct_input(setting_name, current_value_for_logic, value_from_config_file, data_type=str):
+        prompt_message = f"\nEnter {setting_name}"
+        if current_value_for_logic is not None:
+            prompt_message += f" [default: {current_value_for_logic}]: "
+        else:
+            prompt_message += ": "
+        
+        while True:
+            user_input_str = input(prompt_message).strip()
+            if not user_input_str: # User hit Enter
+                # current_value_for_logic already holds the correct default
+                return current_value_for_logic
+            try:
+                return data_type(user_input_str)
+            except ValueError:
+                print(f"Invalid input. Please enter a valid {data_type.__name__}.")
 
-    # VAD
-    vad = input("\nEnable Voice Activity Detection (VAD)? (Y/n) [default: Y]: ").strip().lower()
-    vad = vad != 'n'
+    # --- Host ---
+    key_path_host = "server.host"
+    default_dc_host = DEFAULT_CONFIG['server']['host']
+    val_from_config_host = get_config_value(key_path_host, _sentinel)
+    current_host_val = default_dc_host
+    if val_from_config_host is not _sentinel:
+        print(f"Using 'host' from config: {val_from_config_host}")
+        current_host_val = val_from_config_host
+    host = get_direct_input("host address", current_host_val, val_from_config_host, str)
+    _save_if_needed(key_path_host, host, val_from_config_host, _sentinel, "host")
 
-    # Chunk size
-    chunk_size = input(f"\nEnter minimum chunk size in seconds [default: {defaults['min_chunk_size']}]: ").strip()
-    chunk_size = float(chunk_size) if chunk_size else defaults["min_chunk_size"]
+    # --- Port ---
+    key_path_port = "server.port"
+    default_dc_port = DEFAULT_CONFIG['server']['port']
+    val_from_config_port = get_config_value(key_path_port, _sentinel)
+    current_port_val = default_dc_port
+    if val_from_config_port is not _sentinel:
+        print(f"Using 'port' from config: {val_from_config_port}")
+        current_port_val = val_from_config_port
+    port = get_direct_input("port number", current_port_val, val_from_config_port, int)
+    _save_if_needed(key_path_port, port, val_from_config_port, _sentinel, "port")
+        
+    # --- Warmup File ---
+    key_path_warmup = "server.warmup_file"
+    default_dc_warmup = DEFAULT_CONFIG['server']['warmup_file']
+    val_from_config_warmup = get_config_value(key_path_warmup, _sentinel)
+    current_warmup_val = default_dc_warmup
+    if val_from_config_warmup is not _sentinel:
+        print(f"Using 'warmup_file' from config: {val_from_config_warmup}")
+        current_warmup_val = val_from_config_warmup
+    warmup_file = get_direct_input("warmup file path", current_warmup_val, val_from_config_warmup, str)
+    _save_if_needed(key_path_warmup, warmup_file, val_from_config_warmup, _sentinel, "warmup_file")
 
-    # Log level
-    print("\nAvailable log levels:")
-    for i, level in enumerate(log_levels, 1):
-        print(f"{i}. {level}")
-    while True:
-        choice = input(f"\nSelect log level (1-{len(log_levels)}) [default: INFO]: ").strip()
-        if not choice:
-            selected_log_level = defaults["log_level"]
-            break
-        try:
-            choice = int(choice)
-            if 1 <= choice <= len(log_levels):
-                selected_log_level = log_levels[choice-1]
-                break
-            print(f"Invalid choice. Please select a number between 1 and {len(log_levels)}.")
-        except ValueError:
-            print("Please enter a valid number.")
+    # --- Language ---
+    key_path_lang = "server.language"
+    default_dc_lang = DEFAULT_CONFIG['server']['language']
+    val_from_config_lang = get_config_value(key_path_lang, _sentinel)
+    current_lang_val = default_dc_lang
+    if val_from_config_lang is not _sentinel:
+        print(f"Using 'language' from config: {val_from_config_lang}")
+        current_lang_val = val_from_config_lang
+    language = get_direct_input("language code (e.g., en, de, cs, or 'auto')", current_lang_val, val_from_config_lang, str)
+    _save_if_needed(key_path_lang, language, val_from_config_lang, _sentinel, "language")
+
+    # --- Helper for boolean (Y/n) input ---
+    def get_boolean_input(setting_name, current_value_for_logic, value_from_config_file):
+        prompt_default_display = 'Y' if current_value_for_logic else 'N'
+        user_input_str = input(f"\nEnable {setting_name}? (Y/n) [default: {prompt_default_display}]: ").strip().lower()
+        
+        if not user_input_str: # User hit Enter
+            return current_value_for_logic # Use the displayed default
+        return user_input_str != 'n'
+
+    # --- VAC Enabled ---
+    key_path_vac = "server.vac_enabled"
+    default_dc_vac = DEFAULT_CONFIG['server']['vac_enabled']
+    val_from_config_vac = get_config_value(key_path_vac, _sentinel)
+    current_vac_val = default_dc_vac
+    if val_from_config_vac is not _sentinel:
+        print(f"Using 'VAC enabled' from config: {'Y' if val_from_config_vac else 'N'}")
+        current_vac_val = val_from_config_vac
+    vac_enabled = get_boolean_input("Voice Activity Controller (VAC)", current_vac_val, val_from_config_vac)
+    _save_if_needed(key_path_vac, vac_enabled, val_from_config_vac, _sentinel, "vac_enabled")
+
+    # --- VAD Enabled ---
+    key_path_vad = "server.vad_enabled"
+    default_dc_vad = DEFAULT_CONFIG['server']['vad_enabled']
+    val_from_config_vad = get_config_value(key_path_vad, _sentinel)
+    current_vad_val = default_dc_vad
+    if val_from_config_vad is not _sentinel:
+        print(f"Using 'VAD enabled' from config: {'Y' if val_from_config_vad else 'N'}")
+        current_vad_val = val_from_config_vad
+    vad_enabled = get_boolean_input("Voice Activity Detection (VAD)", current_vad_val, val_from_config_vad)
+    _save_if_needed(key_path_vad, vad_enabled, val_from_config_vad, _sentinel, "vad_enabled")
+
+    # --- Min Chunk Size ---
+    key_path_chunk = "server.min_chunk_size"
+    default_dc_chunk = DEFAULT_CONFIG['server']['min_chunk_size']
+    val_from_config_chunk = get_config_value(key_path_chunk, _sentinel)
+    current_chunk_val = default_dc_chunk
+    if val_from_config_chunk is not _sentinel:
+        print(f"Using 'min_chunk_size' from config: {val_from_config_chunk}")
+        current_chunk_val = val_from_config_chunk
+    min_chunk_size = get_direct_input("minimum chunk size in seconds", current_chunk_val, val_from_config_chunk, float)
+    _save_if_needed(key_path_chunk, min_chunk_size, val_from_config_chunk, _sentinel, "min_chunk_size")
+
+    # --- Log Level ---
+    key_path_log = "server.log_level"
+    default_dc_log = DEFAULT_CONFIG['server']['log_level']
+    val_from_config_log = get_config_value(key_path_log, _sentinel)
+    current_log_val = default_dc_log
+    if val_from_config_log is not _sentinel:
+        print(f"Using 'log_level' from config: {val_from_config_log}")
+        current_log_val = val_from_config_log
+    # If not in config, current_log_val remains default_dc_log
+    if current_log_val is None: # Check effective value
+         print(f"The configured 'log_level' is None or not set. A selection is required.")
+    selected_log_level = get_selection_from_list("log level", log_levels_list, current_log_val, val_from_config_log)
+    _save_if_needed(key_path_log, selected_log_level, val_from_config_log, _sentinel, "log_level")
+    if selected_log_level is None:
+        print("Error: Log level not selected. Using INFO.") # Fallback for safety
+        selected_log_level = "INFO"
+
 
     # Get the machine's IP address
     try:
-        # This creates a temporary socket to get the local IP address
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Doesn't actually connect, just helps get local IP
         s.connect(('8.8.8.8', 80))
         local_ip = s.getsockname()[0]
         s.close()
@@ -133,21 +247,18 @@ def get_user_preferences():
         local_ip = "IP Unknown"
 
     # Create sys.argv with the selected options
-    sys.argv = [sys.argv[0]]
-    sys.argv.extend(["--model", selected_model])
-    sys.argv.extend(["--backend", selected_backend])
-    sys.argv.extend(["--host", host])
-    sys.argv.extend(["--port", str(port)])
-    sys.argv.extend(["--warmup-file", warmup_file])
-    sys.argv.extend(["--lan", language])
-    if vac:
-        sys.argv.append("--vac")
-    if vad:
-        sys.argv.append("--vad")
-    sys.argv.extend(["--min-chunk-size", str(chunk_size)])
-    sys.argv.extend(["--log-level", selected_log_level])
-
-    # Create a summary of selected options
+    sys.argv = [sys.argv[0]] # script name
+    if selected_model: sys.argv.extend(["--model", selected_model])
+    if selected_backend: sys.argv.extend(["--backend", selected_backend])
+    if host: sys.argv.extend(["--host", host])
+    if port is not None: sys.argv.extend(["--port", str(port)])
+    if warmup_file: sys.argv.extend(["--warmup-file", warmup_file])
+    if language: sys.argv.extend(["--lan", language])
+    if vac_enabled: sys.argv.append("--vac") # No value needed for argparse
+    if vad_enabled: sys.argv.append("--vad") # No value needed for argparse
+    if min_chunk_size is not None: sys.argv.extend(["--min-chunk-size", str(min_chunk_size)])
+    if selected_log_level: sys.argv.extend(["--log-level", selected_log_level])
+    
     summary = f"""
 === Configuration Summary ===
 Server IP: {local_ip}
@@ -157,13 +268,12 @@ Host: {host}
 Port: {port}
 Warmup File: {warmup_file}
 Language: {language}
-VAC: {'Enabled' if vac else 'Disabled'}
-VAD: {'Enabled' if vad else 'Disabled'}
-Chunk Size: {chunk_size}
+VAC: {'Enabled' if vac_enabled else 'Disabled'}
+VAD: {'Enabled' if vad_enabled else 'Disabled'}
+Min Chunk Size: {min_chunk_size}
 Log Level: {selected_log_level}
 """
     print(summary)
-
     return summary
 
 class Connection:
