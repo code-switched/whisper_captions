@@ -18,23 +18,11 @@ logger = logging.getLogger(__name__)
 # setting whisper object by args 
 SAMPLING_RATE = 16000
 
-# Helper to manage saving logic
-def _save_if_needed(key_path, final_value, value_from_file, sentinel, setting_name_for_print):
-    if value_from_file is sentinel: # Not in config file originally
-        update_config_value(key_path, final_value)
-        # Avoid printing for None if it's a non-critical field or if it's intended to be None
-        if final_value is not None or setting_name_for_print in ["model", "backend", "log_level"]: # model/backend/log_level must be explicitly set
-             print(f"'{setting_name_for_print}' set to '{final_value}' and saved to config.")
-        elif final_value is None and value_from_file is not None : # explicitely setting to None
-             print(f"'{setting_name_for_print}' set to '{final_value}' and saved to config.")
-
-    elif final_value != value_from_file: # Was in config, but changed
-        update_config_value(key_path, final_value)
-        print(f"'{setting_name_for_print}' updated to '{final_value}' and saved to config.")
-
 def get_user_preferences():
     print("Loading server configuration from config.yaml...")
     load_config() # Ensures config file exists or creates default. Messages handled by config_utils.
+    print("\nNote: Configuration is loaded from config.yaml. Settings chosen during this session")
+    print("will not be saved back to the file. To make persistent changes, please edit config.yaml directly.\n")
 
     models_list = ["tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3"]
     backends_list = ["faster-whisper", "whisper_timestamped", "openai-api"]
@@ -51,25 +39,27 @@ def get_user_preferences():
         
         final_selected_value = current_value_for_logic
         while True:
-            prompt_message = f"\nSelect a {setting_name} (1-{len(item_list)})"
+            prompt_message = f"\nSelect a {setting_name} for the current session (1-{len(item_list)})"
             if final_selected_value is not None:
                 prompt_message += f" [default: {final_selected_value}]: "
             else: # Critical setting like model/backend might be None from DEFAULT_CONFIG
-                prompt_message += " (required): "
+                prompt_message += " (required for this session): "
             
             choice = input(prompt_message).strip()
 
             if not choice: # User hit Enter
-                if final_selected_value is None and setting_name in ["model", "backend"]:
-                    print(f"A selection for '{setting_name}' is required.")
+                if final_selected_value is None and setting_name in ["model", "backend", "log_level"]: # Added log_level here
+                    print(f"A selection for '{setting_name}' is required for this session.")
                     continue # Re-prompt
                 # final_selected_value already holds the correct default (from file or DEFAULT_CONFIG)
+                if final_selected_value is not None:
+                    print(f"Using default '{final_selected_value}' for '{setting_name}' for this session.")
                 break 
             try:
                 choice_idx = int(choice)
                 if 1 <= choice_idx <= len(item_list):
                     final_selected_value = item_list[choice_idx-1]
-                    print(f"{setting_name.capitalize()} '{final_selected_value}' selected.")
+                    print(f"Using '{final_selected_value}' for '{setting_name}' for this session.")
                     break
                 print(f"Invalid choice. Please select a number between 1 and {len(item_list)}.")
             except ValueError:
@@ -87,13 +77,15 @@ def get_user_preferences():
         current_model_val = val_from_config_model
     # If not in config, current_model_val remains default_dc_model
     if current_model_val is None: # Check effective value after considering config and DEFAULT_CONFIG
-         print(f"The configured 'model' is None or not set. A selection is required.")
+         print(f"The configured 'model' is None or not set. A selection is required for this session.")
 
     selected_model = get_selection_from_list("model", models_list, current_model_val, val_from_config_model)
-    _save_if_needed(key_path_model, selected_model, val_from_config_model, _sentinel, "model")
+    # _save_if_needed call removed
     if selected_model is None: # Should not happen if loop in get_selection_from_list is correct
-        print("Error: Model not selected. Exiting.")
-        sys.exit(1)
+        # This case should ideally be prevented by the loop in get_selection_from_list if None is not a valid choice.
+        # If it can reach here with None, it implies None was accepted as a default.
+        print(f"Warning: No model selected. This may cause issues. Using '{current_model_val if current_model_val is not None else 'None'}' for this session.")
+        if current_model_val is None : sys.exit(1) # Exit if no valid model could be set
 
 
     # --- Backend Selection ---
@@ -107,29 +99,39 @@ def get_user_preferences():
         current_backend_val = val_from_config_backend
     # If not in config, current_backend_val remains default_dc_backend
     if current_backend_val is None: # Check effective value
-        print(f"The configured 'backend' is None or not set. A selection is required.")
+        print(f"The configured 'backend' is None or not set. A selection is required for this session.")
 
     selected_backend = get_selection_from_list("backend", backends_list, current_backend_val, val_from_config_backend)
-    _save_if_needed(key_path_backend, selected_backend, val_from_config_backend, _sentinel, "backend")
+    # _save_if_needed call removed
     if selected_backend is None:
-        print("Error: Backend not selected. Exiting.")
-        sys.exit(1)
+        print(f"Warning: No backend selected. This may cause issues. Using '{current_backend_val if current_backend_val is not None else 'None'}' for this session.")
+        if current_backend_val is None : sys.exit(1) # Exit if no valid backend could be set
 
     # --- Helper for direct string/int/float input ---
-    def get_direct_input(setting_name, current_value_for_logic, value_from_config_file, data_type=str):
-        prompt_message = f"\nEnter {setting_name}"
+    def get_direct_input(setting_name, current_value_for_logic, value_from_config_file, data_type=str, is_required=False):
+        prompt_message = f"\nEnter {setting_name} for the current session"
         if current_value_for_logic is not None:
             prompt_message += f" [default: {current_value_for_logic}]: "
+        elif is_required:
+             prompt_message += " (required for this session): "
         else:
-            prompt_message += ": "
+            prompt_message += ": " # For optional fields with no default
         
         while True:
             user_input_str = input(prompt_message).strip()
             if not user_input_str: # User hit Enter
-                # current_value_for_logic already holds the correct default
-                return current_value_for_logic
+                if current_value_for_logic is not None:
+                    print(f"Using default '{current_value_for_logic}' for '{setting_name}' for this session.")
+                    return current_value_for_logic
+                elif is_required:
+                    print(f"A value for '{setting_name}' is required for this session.")
+                    continue # Re-prompt
+                else: # Optional field, user entered nothing, no default
+                    return None # Or handle as empty string if appropriate for the setting
             try:
-                return data_type(user_input_str)
+                chosen_value = data_type(user_input_str)
+                print(f"Using '{chosen_value}' for '{setting_name}' for this session.")
+                return chosen_value
             except ValueError:
                 print(f"Invalid input. Please enter a valid {data_type.__name__}.")
 
@@ -142,7 +144,7 @@ def get_user_preferences():
         print(f"Using 'host' from config: {val_from_config_host}")
         current_host_val = val_from_config_host
     host = get_direct_input("host address", current_host_val, val_from_config_host, str)
-    _save_if_needed(key_path_host, host, val_from_config_host, _sentinel, "host")
+    # _save_if_needed call removed
 
     # --- Port ---
     key_path_port = "server.port"
@@ -153,7 +155,7 @@ def get_user_preferences():
         print(f"Using 'port' from config: {val_from_config_port}")
         current_port_val = val_from_config_port
     port = get_direct_input("port number", current_port_val, val_from_config_port, int)
-    _save_if_needed(key_path_port, port, val_from_config_port, _sentinel, "port")
+    # _save_if_needed call removed
         
     # --- Warmup File ---
     key_path_warmup = "server.warmup_file"
@@ -164,7 +166,7 @@ def get_user_preferences():
         print(f"Using 'warmup_file' from config: {val_from_config_warmup}")
         current_warmup_val = val_from_config_warmup
     warmup_file = get_direct_input("warmup file path", current_warmup_val, val_from_config_warmup, str)
-    _save_if_needed(key_path_warmup, warmup_file, val_from_config_warmup, _sentinel, "warmup_file")
+    # _save_if_needed call removed
 
     # --- Language ---
     key_path_lang = "server.language"
@@ -175,7 +177,7 @@ def get_user_preferences():
         print(f"Using 'language' from config: {val_from_config_lang}")
         current_lang_val = val_from_config_lang
     language = get_direct_input("language code (e.g., en, de, cs, or 'auto')", current_lang_val, val_from_config_lang, str)
-    _save_if_needed(key_path_lang, language, val_from_config_lang, _sentinel, "language")
+    # _save_if_needed call removed
 
     # --- Helper for boolean (Y/n) input ---
     def get_boolean_input(setting_name, current_value_for_logic, value_from_config_file):
@@ -195,7 +197,7 @@ def get_user_preferences():
         print(f"Using 'VAC enabled' from config: {'Y' if val_from_config_vac else 'N'}")
         current_vac_val = val_from_config_vac
     vac_enabled = get_boolean_input("Voice Activity Controller (VAC)", current_vac_val, val_from_config_vac)
-    _save_if_needed(key_path_vac, vac_enabled, val_from_config_vac, _sentinel, "vac_enabled")
+    # _save_if_needed call removed
 
     # --- VAD Enabled ---
     key_path_vad = "server.vad_enabled"
@@ -206,7 +208,7 @@ def get_user_preferences():
         print(f"Using 'VAD enabled' from config: {'Y' if val_from_config_vad else 'N'}")
         current_vad_val = val_from_config_vad
     vad_enabled = get_boolean_input("Voice Activity Detection (VAD)", current_vad_val, val_from_config_vad)
-    _save_if_needed(key_path_vad, vad_enabled, val_from_config_vad, _sentinel, "vad_enabled")
+    # _save_if_needed call removed
 
     # --- Min Chunk Size ---
     key_path_chunk = "server.min_chunk_size"
@@ -217,7 +219,7 @@ def get_user_preferences():
         print(f"Using 'min_chunk_size' from config: {val_from_config_chunk}")
         current_chunk_val = val_from_config_chunk
     min_chunk_size = get_direct_input("minimum chunk size in seconds", current_chunk_val, val_from_config_chunk, float)
-    _save_if_needed(key_path_chunk, min_chunk_size, val_from_config_chunk, _sentinel, "min_chunk_size")
+    # _save_if_needed call removed
 
     # --- Log Level ---
     key_path_log = "server.log_level"
@@ -229,12 +231,12 @@ def get_user_preferences():
         current_log_val = val_from_config_log
     # If not in config, current_log_val remains default_dc_log
     if current_log_val is None: # Check effective value
-         print(f"The configured 'log_level' is None or not set. A selection is required.")
+         print(f"The configured 'log_level' is None or not set. A selection is required for this session.")
     selected_log_level = get_selection_from_list("log level", log_levels_list, current_log_val, val_from_config_log)
-    _save_if_needed(key_path_log, selected_log_level, val_from_config_log, _sentinel, "log_level")
-    if selected_log_level is None:
-        print("Error: Log level not selected. Using INFO.") # Fallback for safety
-        selected_log_level = "INFO"
+    # _save_if_needed call removed
+    if selected_log_level is None: # Should be prevented by get_selection_from_list if None is not a choice
+        print(f"Warning: No log level selected. Using default '{current_log_val if current_log_val is not None else 'INFO'}' for this session.")
+        selected_log_level = current_log_val if current_log_val is not None else "INFO" # Fallback
 
 
     # Get the machine's IP address

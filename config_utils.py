@@ -39,7 +39,13 @@ def create_default_config():
 
 
 def save_config(config_data):
-    """Saves the given config_data dictionary to CONFIG_FILE_NAME."""
+    """Saves the given config_data dictionary to the YAML file specified by CONFIG_FILE_NAME.
+
+    Note: In the context of `whisper_online_server.py` and `client_connect.py` 
+    (as of their current design), this function is primarily for initial default 
+    config creation or for potential external tools. These scripts treat 
+    `config.yaml` as read-only during runtime after initial creation.
+    """
     try:
         with open(CONFIG_FILE_NAME, 'w') as f:
             yaml.dump(config_data, f, sort_keys=False)
@@ -97,11 +103,20 @@ def get_config_value(key_path, default_value=None):
 
 
 def update_config_value(key_path, value):
-    """Updates a value in the configuration using a key path.
+    """Loads the current configuration, updates a specific key, and saves the entire configuration back.
+
+    This function modifies the configuration file by setting the given `value` at
+    the specified `key_path`. If intermediate keys in the path do not exist,
+    they will be created as dictionaries.
 
     Args:
         key_path: A string representing the path to the key (e.g., "server.model").
-        value: The new value to set.
+        value: The new value to set for the specified key.
+
+    Note: In the context of `whisper_online_server.py` and `client_connect.py` 
+    (as of their current design), this function is not used at runtime to avoid 
+    altering `config.yaml` based on interactive session inputs. It's available 
+    for other tools or manual scripting.
     """
     config = load_config()
     keys = key_path.split('.')
