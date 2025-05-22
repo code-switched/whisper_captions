@@ -98,49 +98,75 @@ def get_transcript_filename():
 
 
 def send_audio(host="localhost", port=43007, device_index=None, transcript_file="transcript.txt"):
+    # Audio stream configuration
     CHUNK = 3200
     FORMAT = pyaudio.paInt16
     CHANNELS = 1
     RATE = 16000
-    transcript_path = Path(transcript_file)
-    audio_file_path_str = str(transcript_path.with_suffix('.wav'))
 
+    # Create audio file name based on transcript file name
+    transcript_path = Path(transcript_file)
+    audio_file = transcript_path.parent / f"{transcript_path.stem}.wav"
+
+    # Initialize PyAudio first
     p = pyaudio.PyAudio()
     wf = None
     stream = None
 
     try:
-        wf = wave.open(audio_file_path_str, 'wb')
+        # Set up WAV file
+        wf = wave.open(str(audio_file), 'wb')  # Convert Path to string for wave module
         wf.setnchannels(CHANNELS)
         wf.setsampwidth(p.get_sample_size(FORMAT))
         wf.setframerate(RATE)
 
-        stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True,
-                       input_device_index=device_index, frames_per_buffer=CHUNK)
+        # Open audio stream with selected device
+        stream = p.open(format=FORMAT,
+                       channels=CHANNELS,
+                       rate=RATE,
+                       input=True,
+                       input_device_index=device_index,
+                       frames_per_buffer=CHUNK)
 
         print("\nConnecting to server...")
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.connect((host, port))
             print("Connected! Start speaking (Ctrl+C to exit)...")
+
             while True:
                 try:
+                    # Read audio data from microphone
                     data = stream.read(CHUNK, exception_on_overflow=False)
+
+                    # Save audio chunk to WAV file
                     wf.writeframes(data)
-                    s.sendall(data)
+
+                    # Check for voice activity (silently)
+                    audio_samples = struct.unpack(f'{CHUNK}h', data)
+                    max_amplitude = max(abs(min(audio_samples)), abs(max(audio_samples)))
+
+                    # Send the data if above noise threshold
+                    if max_amplitude > 500:
+                        s.sendall(data)
+
+                    # Try to receive any response
                     try:
-                        s.settimeout(0.01)
+                        s.settimeout(0.1)
                         response = s.recv(1024)
                         if response:
+                            # Parse and display the transcription text
                             parts = response.decode('utf-8').strip().split('  ', 1)
                             if len(parts) > 1:
                                 transcription = parts[1]
-                                print(transcription, end='\r', flush=True) 
+                                print(transcription)  # Print to console
+                                # Save to file
                                 with open(transcript_file, 'a', encoding='utf-8') as f:
                                     f.write(transcription + '\n')
                             else:
-                                print(response.decode('utf-8').strip(), end='\r', flush=True)
+                                print(response.decode('utf-8').strip())
                     except socket.timeout:
                         pass
+
                 except KeyboardInterrupt:
                     print("\nStopping...")
                     break
